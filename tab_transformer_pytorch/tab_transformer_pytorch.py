@@ -6,13 +6,17 @@ from einops import rearrange
 
 # helpers
 
+
 def exists(val):
     return val is not None
+
 
 def default(val, d):
     return val if exists(val) else d
 
+
 # classes
+
 
 class Residual(nn.Module):
     def __init__(self, fn):
@@ -22,6 +26,10 @@ class Residual(nn.Module):
     def forward(self, x, **kwargs):
         return self.fn(x, **kwargs) + x
 
+
+# I THINK THIS IS WRONG: based on the paper's architecture, first you apply
+# the fn then norm. For example, first you go through the attention layer then
+# you add and normalise
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
@@ -31,70 +39,86 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         return self.fn(self.norm(x), **kwargs)
 
+
 # attention
+
 
 class GEGLU(nn.Module):
     def forward(self, x):
-        x, gates = x.chunk(2, dim = -1)
+        x, gates = x.chunk(2, dim=-1)
         return x * F.gelu(gates)
 
+
 class FeedForward(nn.Module):
-    def __init__(self, dim, mult = 4, dropout = 0.):
+    def __init__(self, dim, mult=4, dropout=0.0):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, dim * mult * 2),
             GEGLU(),
             nn.Dropout(dropout),
-            nn.Linear(dim * mult, dim)
+            nn.Linear(dim * mult, dim),
         )
 
     def forward(self, x, **kwargs):
         return self.net(x)
 
+
 class Attention(nn.Module):
-    def __init__(
-        self,
-        dim,
-        heads = 8,
-        dim_head = 16,
-        dropout = 0.
-    ):
+    def __init__(self, dim, heads=8, dim_head=16, dropout=0.0):
         super().__init__()
         inner_dim = dim_head * heads
         self.heads = heads
         self.scale = dim_head ** -0.5
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         h = self.heads
-        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
-        sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
+        sim = einsum("b h i d, b h j d -> b h i j", q, k) * self.scale
 
-        attn = sim.softmax(dim = -1)
+        attn = sim.softmax(dim=-1)
         attn = self.dropout(attn)
 
-        out = einsum('b h i j, b h j d -> b h i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)', h = h)
+        out = einsum("b h i j, b h j d -> b h i d", attn, v)
+        out = rearrange(out, "b h n d -> b n (h d)", h=h)
         return self.to_out(out)
+
 
 # transformer
 
+
 class Transformer(nn.Module):
-    def __init__(self, num_tokens, dim, depth, heads, dim_head, attn_dropout, ff_dropout):
+    def __init__(
+        self, num_tokens, dim, depth, heads, dim_head, attn_dropout, ff_dropout
+    ):
         super().__init__()
         self.embeds = nn.Embedding(num_tokens, dim)
         self.layers = nn.ModuleList([])
 
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                Residual(PreNorm(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = attn_dropout))),
-                Residual(PreNorm(dim, FeedForward(dim, dropout = ff_dropout))),
-            ]))
+            self.layers.append(
+                nn.ModuleList(
+                    [
+                        Residual(
+                            PreNorm(
+                                dim,
+                                Attention(
+                                    dim,
+                                    heads=heads,
+                                    dim_head=dim_head,
+                                    dropout=attn_dropout,
+                                ),
+                            )
+                        ),
+                        Residual(PreNorm(dim, FeedForward(dim, dropout=ff_dropout))),
+                    ]
+                )
+            )
 
     def forward(self, x):
         x = self.embeds(x)
@@ -104,10 +128,13 @@ class Transformer(nn.Module):
             x = ff(x)
 
         return x
+
+
 # mlp
 
+
 class MLP(nn.Module):
-    def __init__(self, dims, act = None):
+    def __init__(self, dims, act=None):
         super().__init__()
         dims_pairs = list(zip(dims[:-1], dims[1:]))
         layers = []
@@ -127,7 +154,9 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
+
 # main class
+
 
 class TabTransformer(nn.Module):
     def __init__(
@@ -138,17 +167,19 @@ class TabTransformer(nn.Module):
         dim,
         depth,
         heads,
-        dim_head = 16,
-        dim_out = 1,
-        mlp_hidden_mults = (4, 2),
-        mlp_act = None,
-        num_special_tokens = 2,
-        continuous_mean_std = None,
-        attn_dropout = 0.,
-        ff_dropout = 0.
+        dim_head=16,
+        dim_out=1,
+        mlp_hidden_mults=(4, 2),
+        mlp_act=None,
+        num_special_tokens=2,
+        continuous_mean_std=None,
+        attn_dropout=0.0,
+        ff_dropout=0.0,
     ):
         super().__init__()
-        assert all(map(lambda n: n > 0, categories)), 'number of each category must be positive'
+        assert all(
+            map(lambda n: n > 0, categories)
+        ), "number of each category must be positive"
 
         # categories related calculations
 
@@ -162,15 +193,20 @@ class TabTransformer(nn.Module):
 
         # for automatically offsetting unique category ids to the correct position in the categories embedding table
 
-        categories_offset = F.pad(torch.tensor(list(categories)), (1, 0), value = num_special_tokens)
-        categories_offset = categories_offset.cumsum(dim = -1)[:-1]
-        self.register_buffer('categories_offset', categories_offset)
+        categories_offset = F.pad(
+            torch.tensor(list(categories)), (1, 0), value=num_special_tokens
+        )
+        categories_offset = categories_offset.cumsum(dim=-1)[:-1]
+        self.register_buffer("categories_offset", categories_offset)
 
         # continuous
 
         if exists(continuous_mean_std):
-            assert continuous_mean_std.shape == (num_continuous, 2), f'continuous_mean_std must have a shape of ({num_continuous}, 2) where the last dimension contains the mean and variance respectively'
-        self.register_buffer('continuous_mean_std', continuous_mean_std)
+            assert continuous_mean_std.shape == (
+                num_continuous,
+                2,
+            ), f"continuous_mean_std must have a shape of ({num_continuous}, 2) where the last dimension contains the mean and variance respectively"
+        self.register_buffer("continuous_mean_std", continuous_mean_std)
 
         self.norm = nn.LayerNorm(num_continuous)
         self.num_continuous = num_continuous
@@ -178,13 +214,13 @@ class TabTransformer(nn.Module):
         # transformer
 
         self.transformer = Transformer(
-            num_tokens = total_tokens,
-            dim = dim,
-            depth = depth,
-            heads = heads,
-            dim_head = dim_head,
-            attn_dropout = attn_dropout,
-            ff_dropout = ff_dropout
+            num_tokens=total_tokens,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            dim_head=dim_head,
+            attn_dropout=attn_dropout,
+            ff_dropout=ff_dropout,
         )
 
         # mlp to logits
@@ -195,23 +231,27 @@ class TabTransformer(nn.Module):
         hidden_dimensions = list(map(lambda t: l * t, mlp_hidden_mults))
         all_dimensions = [input_size, *hidden_dimensions, dim_out]
 
-        self.mlp = MLP(all_dimensions, act = mlp_act)
+        self.mlp = MLP(all_dimensions, act=mlp_act)
 
     def forward(self, x_categ, x_cont):
-        assert x_categ.shape[-1] == self.num_categories, f'you must pass in {self.num_categories} values for your categories input'
+        assert (
+            x_categ.shape[-1] == self.num_categories
+        ), f"you must pass in {self.num_categories} values for your categories input"
         x_categ += self.categories_offset
 
         x = self.transformer(x_categ)
 
         flat_categ = x.flatten(1)
 
-        assert x_cont.shape[1] == self.num_continuous, f'you must pass in {self.num_continuous} values for your continuous input'
+        assert (
+            x_cont.shape[1] == self.num_continuous
+        ), f"you must pass in {self.num_continuous} values for your continuous input"
 
         if exists(self.continuous_mean_std):
-            mean, std = self.continuous_mean_std.unbind(dim = -1)
+            mean, std = self.continuous_mean_std.unbind(dim=-1)
             x_cont = (x_cont - mean) / std
 
         normed_cont = self.norm(x_cont)
 
-        x = torch.cat((flat_categ, normed_cont), dim = -1)
+        x = torch.cat((flat_categ, normed_cont), dim=-1)
         return self.mlp(x)
